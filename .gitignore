@@ -1,3 +1,18 @@
 .venv/
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
+
+# dados gerados pelo bootstrap do notebook
+dados_*.csv
+notebooks/dados_*.csv
+
+# artefatos de treino
+models/*.joblib
+reports/figures/*.png
+reports/metrics.json
+
+# arquivos brutos originais (nomes UUID)
+3e6c6506-*.docx
+5fa876eb-*.csv
+d1788ef9-*.csv
