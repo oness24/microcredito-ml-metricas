@@ -59,6 +59,33 @@ diferença entre as duas métricas é o peso que o RMSE dá a poucos erros grand
 A recomendação é contratar o **MAE** como SLA — interpretável e estável — e usar o RMSE como
 sentinela de erros graves, com revisão manual obrigatória acima de um teto de valor. Um modelo
 não-linear (Gradient Boosting) reduz MAE e RMSE de forma expressiva e deve substituir o baseline.
+
+## Roteiro do notebook
+
+O fio condutor é sempre o mesmo: **métrica certa → decisão certa → impacto financeiro.** A ordem
+das etapas reproduz como um analista atacaria o problema na prática:
+
+**Parte A — Classificação (inadimplência)**
+1. Olhar a distribuição da classe e constatar o desbalanceamento.
+2. Treinar um modelo baseline (regressão logística).
+3. Calcular matriz de confusão e métricas (acurácia, precisão, recall, F1, AUC).
+4. Mostrar, com um teste simples, por que a acurácia engana aqui.
+5. Traduzir os erros em custo de negócio (matriz de custos).
+6. Escolher o limiar de decisão que minimiza esse custo.
+7. Definir a métrica de monitoramento contínuo.
+8. Listar melhorias priorizadas.
+
+**Parte B — Regressão (preço de revenda)**
+1. Explorar os dados e as correlações com o preço.
+2. Treinar um baseline (regressão linear) e medir MAE e RMSE.
+3. Interpretar a diferença entre as duas métricas.
+4. Analisar o efeito de outliers no RMSE (antes e depois).
+5. Decidir a métrica de contrato (MAE ou RMSE).
+6. Listar melhorias priorizadas.
+
+**Como ler.** Cada bloco de código é antecedido por uma explicação do *que* será feito e *por quê*,
+e seguido pela leitura do resultado. Para reproduzir tudo, execute as células em ordem
+(no Colab: *Ambiente de execução > Executar tudo*).
 """)
 
 # --------------------------------------------------------------------------- COLAB
@@ -84,7 +111,11 @@ code(("# Bootstrap de dados: grava os CSVs a partir de cópia embutida (gzip+bas
       'print("Dados disponiveis:", ", ".join(_DADOS))') % (B64_CRED, B64_VEIC))
 
 # --------------------------------------------------------------------------- SETUP
-md("## Configuração")
+md(r"""## Configuração
+
+Importa as bibliotecas, fixa a semente aleatória (`SEED = 42`, para que os resultados sejam
+sempre os mesmos) e carrega os dois datasets já gravados pela célula anterior. A saída mostra o
+formato de cada tabela e as primeiras linhas do dataset de crédito.""")
 code(r"""import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -125,7 +156,13 @@ md(r"""---
 A classe positiva é `target_default = 1` (cliente que dá calote). Os erros têm custos
 assimétricos, e é exatamente isso que a acurácia ignora.""")
 
-md("### A.1 Distribuição da classe")
+md(r"""### A.1 Distribuição da classe
+
+**O que fazemos.** Contamos quantos clientes são inadimplentes (`target_default = 1`) e quantos
+são bons pagadores (`0`). **Por quê.** Antes de qualquer modelo, precisamos saber se a base é
+equilibrada — isso muda como interpretamos as métricas. **O que observar.** A barra vermelha
+(inadimplentes) é muito menor: a classe que queremos prever é a rara, o que torna a acurácia uma
+métrica perigosa (próxima célula A.4).""")
 code(r"""dist = credito["target_default"].value_counts().sort_index()
 taxa = credito["target_default"].mean()
 
@@ -141,7 +178,15 @@ plt.tight_layout(); plt.show()
 print(f"Inadimplencia: {taxa:.1%}. Um modelo que sempre responde 'bom pagador' "
       f"acertaria {1-taxa:.1%} dos casos sem aprender nada.")""")
 
-md("### A.2 Modelo baseline (regressão logística)")
+md(r"""### A.2 Modelo baseline (regressão logística)
+
+**O que fazemos.** Separamos os dados em treino (70%) e teste (30%), padronizamos as variáveis e
+treinamos uma regressão logística — um modelo simples e interpretável que serve de ponto de
+partida. **Detalhes que importam:** `stratify=y` mantém a mesma proporção de inadimplentes nos
+dois conjuntos; a padronização (`StandardScaler`) coloca todas as variáveis na mesma escala, o que
+ajuda o modelo a convergir. O modelo devolve uma **probabilidade** de inadimplência por cliente
+(`proba`); a decisão de aprovar ou negar vem depois, ao aplicarmos um limiar sobre essa
+probabilidade.""")
 code(r"""X = credito.drop(columns="target_default")
 y = credito["target_default"]
 X_tr, X_te, y_tr, y_te = train_test_split(
@@ -156,7 +201,19 @@ pred_050 = (proba >= 0.50).astype(int)
 
 print(f"Treino: {len(X_tr)} | Teste: {len(X_te)} | inadimplencia no teste: {y_te.mean():.1%}")""")
 
-md("### A.3 Matriz de confusão e métricas")
+md(r"""### A.3 Matriz de confusão e métricas
+
+**O que fazemos.** Aplicamos o limiar padrão de 0,50 (aprova se a probabilidade de calote for
+menor que 50%) e medimos os acertos e erros. A **matriz de confusão** cruza o real com o previsto:
+
+- **VN** (verdadeiro negativo): bom pagador aprovado — correto.
+- **VP** (verdadeiro positivo): inadimplente negado — correto.
+- **FP** (falso positivo): bom pagador negado — perdemos a margem.
+- **FN** (falso negativo): inadimplente aprovado — perdemos o principal.
+
+A tabela traz as métricas derivadas dessa matriz, cada uma com sua interpretação. **O que
+observar.** A acurácia parece boa, mas o recall (quantos inadimplentes o modelo realmente pega) é
+baixo — o sinal de que a acurácia está mascarando o problema.""")
 code(r"""def painel(y_true, y_score, thr):
     y_hat = (y_score >= thr).astype(int)
     cm = confusion_matrix(y_true, y_hat)
@@ -227,7 +284,12 @@ inadimplente).
 O enunciado sugere uma razão em torno de 5:2. Ajustamos para **10:2 (5:1)** ancorando em valores:
 aprovar um caloteiro queima o principal (~R$ 20 mil), enquanto negar um bom cliente custa apenas
 a margem perdida (~R$ 2 mil). A perda de principal é da ordem de 5x maior. A razão é o que
-importa; em produção pode-se usar o `valor_solicitado` linha a linha.""")
+importa; em produção pode-se usar o `valor_solicitado` linha a linha.
+
+**O que a célula faz.** Define os custos, cria a função `custo_esperado` (que conta FN e FP e
+soma o custo total de um dado limiar) e mostra o custo no limiar 0,50. Também calcula o limiar
+ótimo *teórico* (regra de Bayes, `custo_fp / (custo_fp + custo_fn)`), que serve de referência
+para o ótimo empírico encontrado na A.6.""")
 code(r"""CUSTO_FN = 10  # aprovar inadimplente (perde o principal)
 CUSTO_FP = 2   # negar bom pagador (perde a margem)
 
@@ -241,7 +303,18 @@ limiar_bayes = CUSTO_FP / (CUSTO_FP + CUSTO_FN)
 print(f"Limiar 0,50: FN={fn050}, FP={fp050}, custo total={c050}")
 print(f"Limiar otimo teorico (Bayes) = {limiar_bayes:.2f}")""")
 
-md("### A.6 Limiar de menor custo esperado")
+md(r"""### A.6 Limiar de menor custo esperado
+
+**O que fazemos.** Em vez de decidir no limiar fixo de 0,50, testamos 99 limiares (de 0,01 a
+0,99), calculamos o custo total de negócio em cada um e escolhemos o de menor custo. **O que
+mostram os três gráficos:**
+
+- **Custo x limiar** — a curva de custo; o ponto vermelho é o limiar ótimo, o cinza é o padrão 0,50.
+- **Curva ROC** — capacidade do modelo de ranquear risco (AUC); independe do limiar.
+- **Curva precisão-recall** — desempenho na classe rara, comparado ao acaso.
+
+**O que observar.** O limiar ótimo cai bem abaixo de 0,50, e os falsos negativos (calotes
+aprovados) despencam — exatamente o erro que mais custa.""")
 code(r"""thrs = np.linspace(0.01, 0.99, 99)
 custos = np.array([custo_esperado(y_te, proba, t)[0] for t in thrs])
 thr_otimo = thrs[custos.argmin()]
@@ -298,7 +371,12 @@ Recomendação: monitorar **PR-AUC** (saúde do modelo, independe de corte) e **
 menor custo** (saúde da operação). A acurácia pode ser reportada, mas não deve ser otimizada.
 Alertas disparam por queda de PR-AUC ou aumento do custo esperado em produção.""")
 
-md("### A.8 Melhorias propostas")
+md(r"""### A.8 Melhorias propostas
+
+**O que a célula demonstra.** Duas melhorias concretas, com números: (1) re-treinar com
+`class_weight='balanced'`, que dá mais peso à classe rara, e comparar PR-AUC, recall e custo; e
+(2) uma regra de negócio determinística (fraude ou 2+ atrasos) aplicada antes do modelo, mostrando
+quão concentrada de inadimplentes é essa população.""")
 code(r"""# 1. class_weight='balanced' (custo nulo, dá peso à classe rara)
 mod_bal = LogisticRegression(max_iter=1000, class_weight="balanced",
                              random_state=SEED).fit(X_tr_s, y_tr)
@@ -336,7 +414,13 @@ md(r"""---
 O preço previsto vira limite de crédito. Subestimar aperta o cliente; superestimar expõe a
 fintech a uma garantia que não cobre a dívida.""")
 
-md("### B.1 Exploração")
+md(r"""### B.1 Exploração
+
+**O que fazemos.** Antes de modelar, olhamos como o preço se distribui e quais variáveis estão
+mais associadas a ele. **O que observar.** No histograma, a média fica à direita da mediana — há
+uma cauda de carros caros (premium) que vai ser importante na discussão de RMSE. No gráfico de
+correlação, o preço sobe com o ano (carro mais novo) e cai com a quilometragem, as revisões
+pendentes e o número de donos — relações que fazem sentido no mundo real.""")
 code(r"""fig, axs = plt.subplots(1, 2, figsize=(13, 4.0))
 axs[0].hist(veiculos["preco_real"], bins=30, color=AZUL, alpha=.85)
 axs[0].axvline(veiculos["preco_real"].median(), color=VERM, ls="--",
@@ -353,7 +437,12 @@ axs[1].set_title("Correlacao com o preco"); axs[1].set_xlabel("Pearson")
 plt.tight_layout(); plt.show()
 print("Preco sobe com ano e cai com km, revisoes pendentes e numero de donos.")""")
 
-md("### B.2 Modelo baseline (regressão linear)")
+md(r"""### B.2 Modelo baseline (regressão linear)
+
+**O que fazemos.** Transformamos a coluna de texto `marca` em colunas numéricas (one-hot
+encoding), separamos treino/teste e treinamos uma regressão linear. **O que observar.** O MAE diz
+o erro típico em reais; o RMSE pune mais os erros grandes. A razão RMSE/MAE acima de 1 já
+antecipa que existem alguns erros grandes — tema da seção B.4.""")
 code(r"""veic = pd.get_dummies(veiculos, columns=["marca"], drop_first=True)
 Xr, yr = veic.drop(columns="preco_real"), veic["preco_real"]
 Xr_tr, Xr_te, yr_tr, yr_te = train_test_split(Xr, yr, test_size=0.30, random_state=SEED)
@@ -373,7 +462,11 @@ md(r"""### B.3 MAE vs RMSE — interpretação prática
   grandes de forma desproporcional. Um único erro de R$ 40 mil pesa como muitos erros pequenos.
 
 A razão RMSE/MAE acima de 1 é a assinatura dos erros grandes: se todos os erros tivessem o mesmo
-tamanho, as duas métricas coincidiriam.""")
+tamanho, as duas métricas coincidiriam.
+
+**O que mostram os gráficos abaixo.** Esquerda: previsto x real — quanto mais perto da linha
+tracejada, melhor a previsão; pontos longe da linha são os erros grandes. Direita: a distribuição
+dos resíduos (erro = real − previsto); caudas largas indicam previsões que erraram feio.""")
 code(r"""res = yr_te.values - pred_lin
 fig, axs = plt.subplots(1, 2, figsize=(13, 4.0))
 axs[0].scatter(yr_te, pred_lin, alpha=.6, color=AZUL, edgecolor="white", s=42)
@@ -440,7 +533,12 @@ o que aponta para o MAE. O risco financeiro grave, porém, está nos casos super
 valor, que o RMSE enxerga melhor. Daí a combinação: MAE no contrato, RMSE no alarme, e revisão
 manual obrigatória acima de um teto de valor (B.6).""")
 
-md("### B.6 Melhorias propostas")
+md(r"""### B.6 Melhorias propostas
+
+**O que a célula demonstra.** (1) Troca a regressão linear por um Gradient Boosting, que captura
+relações não-lineares entre ano, km e marca, e mede a queda de MAE e RMSE; (2) calcula o erro
+percentual (MAPE) por faixa de preço, revelando onde o modelo erra mais em termos relativos —
+insumo para decidir o que mandar para revisão manual.""")
 code(r"""# 1. Modelo nao-linear capta interacoes ano x km x marca
 gbr = GradientBoostingRegressor(random_state=SEED).fit(Xr_tr, yr_tr)
 pred_gbr = gbr.predict(Xr_te)
